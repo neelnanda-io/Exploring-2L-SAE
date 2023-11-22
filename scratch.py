@@ -180,3 +180,43 @@ token_df["delta_ptl"] = to_numpy(delta_ptl.flatten())
 display(token_df.sort_values("delta_ptl", ascending=False).head(20))
 display(token_df.sort_values("delta_ptl", ascending=True).head(20))
 # %%
+virtual_weights = encoder0.W_dec @ model.W_in[1] @ model.W_out[1] @ encoder1.W_enc
+virtual_weights.shape
+# %%
+histogram(virtual_weights.flatten()[::1001])
+# %%
+neuron2neuron = model.W_out[0] @ model.W_in[1]
+histogram(neuron2neuron.flatten()[::101])
+# %%
+histogram(virtual_weights.mean(0), title="Ave by end feature")
+histogram(virtual_weights.mean(1), title="Ave by start feature")
+histogram(virtual_weights.median(0).values, title="Median by end feature")
+histogram(virtual_weights.median(1).values, title="Median by start feature")
+# %%
+example_tokens = tokenized_data[:800]["tokens"]
+_, cache = model.run_with_cache(example_tokens, stop_at_layer=2, names_filter=lambda x: "mlp_out" in x)
+loss, recons_mlp_out0, hidden_acts0, l2_loss, l1_loss = encoder0(cache["mlp_out", 0])
+loss, recons_mlp_out1, hidden_acts1, l2_loss, l1_loss = encoder1(cache["mlp_out", 1])
+
+
+# %%
+try:
+    hidden_acts0 = einops.rearrange(hidden_acts0, "batch pos d_enc -> (batch pos) d_enc")
+    hidden_acts1 = einops.rearrange(hidden_acts1, "batch pos d_enc -> (batch pos) d_enc")
+except:
+    pass
+hidden_is_pos0 = hidden_acts0 > 0
+hidden_is_pos1 = hidden_acts1 > 0
+d_enc = hidden_acts0.shape[-1]
+cooccur_count = torch.zeros((d_enc, d_enc), device="cuda", dtype=torch.float32)
+for end_i in tqdm.trange(d_enc):
+    cooccur_count[:, end_i] = hidden_is_pos0[hidden_is_pos1[:, end_i]].float().sum(0)
+# %%
+num_firings0 = hidden_is_pos0.sum(0)
+num_firings1 = hidden_is_pos1.sum(0)
+cooccur_freq = cooccur_count / torch.maximum(num_firings0[:, None], num_firings1[None, :])
+# %%
+# cooccur_count = cooccur_count.float() / hidden_acts0.shape[0]
+# %%
+histogram(cooccur_freq[cooccur_freq>0.1], log_y=True)
+# %%
