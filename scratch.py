@@ -129,7 +129,10 @@ encoder1 = AutoEncoder.load_from_hf("gelu-2l_L1_16384_mlp_out_50", "cuda")
 data = load_dataset("NeelNanda/c4-10k", split="train")
 tokenized_data = utils.tokenize_and_concatenate(data, model.tokenizer, max_length=128)
 tokenized_data[0]
+
 # %%
+# SKIP FROM HERE ON
+
 example_tokens = tokenized_data[:200]["tokens"]
 logits, cache = model.run_with_cache(example_tokens)
 per_token_loss = model.loss_fn(logits, example_tokens, True)
@@ -193,7 +196,10 @@ histogram(virtual_weights.mean(1), title="Ave by start feature")
 histogram(virtual_weights.median(0).values, title="Median by end feature")
 histogram(virtual_weights.median(1).values, title="Median by start feature")
 # %%
-example_tokens = tokenized_data[:800]["tokens"]
+
+# START HERE!
+
+example_tokens = tokenized_data[:600]["tokens"]
 _, cache = model.run_with_cache(example_tokens, stop_at_layer=2, names_filter=lambda x: "mlp_out" in x)
 loss, recons_mlp_out0, hidden_acts0, l2_loss, l1_loss = encoder0(cache["mlp_out", 0])
 loss, recons_mlp_out1, hidden_acts1, l2_loss, l1_loss = encoder1(cache["mlp_out", 1])
@@ -201,9 +207,12 @@ loss, recons_mlp_out1, hidden_acts1, l2_loss, l1_loss = encoder1(cache["mlp_out"
 
 # %%
 try:
+    hidden_acts0 = hidden_acts0[:, 1:, :]
     hidden_acts0 = einops.rearrange(hidden_acts0, "batch pos d_enc -> (batch pos) d_enc")
+    hidden_acts1 = hidden_acts1[:, 1:, :]
     hidden_acts1 = einops.rearrange(hidden_acts1, "batch pos d_enc -> (batch pos) d_enc")
 except:
+    print("FAILED")
     pass
 hidden_is_pos0 = hidden_acts0 > 0
 hidden_is_pos1 = hidden_acts1 > 0
@@ -219,4 +228,75 @@ cooccur_freq = cooccur_count / torch.maximum(num_firings0[:, None], num_firings1
 # cooccur_count = cooccur_count.float() / hidden_acts0.shape[0]
 # %%
 histogram(cooccur_freq[cooccur_freq>0.1], log_y=True)
+# %%
+cooccur_freq[cooccur_freq.isnan()] = 0.
+val, ind = cooccur_freq.flatten().topk(10)
+
+start_topk_ind = (ind // d_enc)
+end_topk_ind = (ind % d_enc)
+print(val)
+print(start_topk_ind)
+print(end_topk_ind)
+
+print(num_firings0[start_topk_ind])
+print(num_firings1[end_topk_ind])
+# # %%
+# cooccur_freq.topk(10)
+# # %%
+# cooccur_df = pd.DataFrame({
+#     "start": [i for i in range(d_enc) for j in range(d_enc)],
+#     "end": [j for i in range(d_enc) for j in range(d_enc)],
+#     "cooccur_freq": to_numpy(cooccur_freq.flatten()),
+# })
+# cooccur_df.sort_values("cooccur_freq", ascending=False).head(20)
+# # %%
+
+# print(num_firings0[[1775,  9818,  4323,  1997, 11097,  9818, 11097,  4323,  1775,  1997]])
+# print(num_firings1[[9835, 14644]])
+# # %%
+
+# %%
+feature_id = 2593
+layer = 0
+token_df = nutils.make_token_df(example_tokens).query("pos>=1")
+token_df["val"] = to_numpy(hidden_acts1[:, feature_id])
+pd.set_option('display.max_rows', 50)
+display(token_df.sort_values("val", ascending=False).head(50))
+
+# %%
+logit_weights = encoder1.W_dec[feature_id, :] @ model.W_U
+vocab_df = nutils.create_vocab_df(logit_weights)
+vocab_df["has_space"] = vocab_df["token"].apply(lambda x: nutils.SPACE in x)
+px.histogram(vocab_df, x="logit", color="has_space", barmode="overlay", marginal="box")
+display(vocab_df.head(20))
+# %%
+is_an = example_tokens[:, 1:].flatten() == model.to_single_token(" an")
+
+# %%
+line(hidden_is_pos0[is_an].float().mean(0))
+line(hidden_is_pos1[is_an].float().mean(0))
+# %%
+scatter(x=virtual_weights[5740], y=hidden_is_pos1[is_an].float().mean(0), hover=np.arange(d_enc))
+# %%
+l0_feature_an = 5740
+line(hidden_acts0[5740])
+replacement_for_feature = torch.zeros_like(example_tokens).cuda()
+replacement_for_feature[:, 1:] = hidden_acts0[:, 5740].reshape(600, 127)
+mlp_out0_diff = replacement_for_feature[:, :, None] * encoder0.W_dec[l0_feature_an]
+
+new_end_topk = end_topk_ind[start_topk_ind==5740]
+
+def remove_an_feature(mlp_out, hook):
+    mlp_out[:, :] -= mlp_out0_diff
+    return mlp_out
+model.reset_hooks()
+model.blocks[0].hook_mlp_out.add_hook(remove_an_feature)
+_, new_cache = model.run_with_cache(example_tokens, stop_at_layer=2, names_filter=lambda x: "mlp_out" in x)
+loss, x_reconstruct, hidden_acts_new, l2_loss, l1_loss = encoder1(new_cache["mlp_out", 1])
+model.reset_hooks()
+# %%
+new_hidden_acts_on_an = hidden_acts_new[:, :, new_end_topk].reshape(-1, 5)[example_tokens.flatten()==model.to_single_token(" an"), :]
+old_hidden_acts_on_an = hidden_acts1[:, new_end_topk][example_tokens[:, 1:].flatten()==model.to_single_token(" an"), :]
+for i in range(5):
+    scatter(x=old_hidden_acts_on_an[:, i], y=new_hidden_acts_on_an[:, i], hover=np.arange(180), title=new_end_topk[i].item(), include_diag=True, yaxis="POst Ablation", xaxis="Pre Ablation")
 # %%
